@@ -16,31 +16,68 @@ button{font:600 16px -apple-system,sans-serif;padding:12px;border:0;border-radiu
 <input id="pw" type="password" autocomplete="current-password" placeholder="Passphrase" autofocus>
 <button type="submit">Unlock</button><div class="err" id="err"></div></form>
 <script>
-const ITER=600000; let salt, iv, ct;
+const ITER=600000; let salt, iv, ct, blobB64="";
 async function loadBlob(){
   const r=await fetch("blob.json?t="+Date.now(),{cache:"no-store"});
   if(!r.ok) throw new Error("blob "+r.status);
-  const raw=Uint8Array.from(atob((await r.json()).b),c=>c.charCodeAt(0));
+  const b=(await r.json()).b; const changed = b!==blobB64; blobB64=b;
+  const raw=Uint8Array.from(atob(b),c=>c.charCodeAt(0));
   salt=raw.slice(0,16); iv=raw.slice(16,28); ct=raw.slice(28);
+  return changed;
 }
 async function keyFrom(pw){
   const base=await crypto.subtle.importKey("raw",new TextEncoder().encode(pw),"PBKDF2",false,["deriveBits"]);
   const bits=await crypto.subtle.deriveBits({name:"PBKDF2",salt,iterations:ITER,hash:"SHA-256"},base,256);
   return crypto.subtle.importKey("raw",bits,"AES-GCM",false,["decrypt"]);
 }
-async function show(key){
+async function show(key, pw){
   const pt=await crypto.subtle.decrypt({name:"AES-GCM",iv},key,ct);
   const html=new TextDecoder().decode(pt);
   document.open();document.write(html);document.close();
   const lock=document.createElement("p");lock.style.cssText="text-align:center;font-size:12px;margin:24px 0 0";
   lock.innerHTML='<a href="#" id="lock" style="color:inherit;opacity:.6">Lock this device</a>';
   document.body.appendChild(lock);
+  installRefresh(pw);
   const loadedAt=Date.now();
   document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible" && Date.now()-loadedAt>5*60*1000) location.reload(); });
   document.getElementById("lock").onclick=e=>{e.preventDefault();try{localStorage.removeItem("pfpw")}catch(_){}location.reload();};
 }
+function asofText(){ const p=document.querySelector(".asof"); const t=p?p.textContent.trim():""; return t.split(" · ")[0].replace(/^Stocks /,""); }
+function toast(msg){
+  let t=document.getElementById("pf-toast");
+  if(!t){ t=document.createElement("div"); t.id="pf-toast"; t.style.cssText="position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:var(--fg,#1B1B1D);color:var(--bg,#fff);font:600 13px -apple-system,sans-serif;padding:10px 14px;border-radius:999px;box-shadow:0 4px 16px rgba(0,0,0,.2);z-index:99;max-width:90vw;text-align:center;opacity:0;transition:opacity .2s"; document.body.appendChild(t); }
+  t.textContent=msg; t.style.opacity="1"; clearTimeout(t._h); t._h=setTimeout(()=>{ t.style.opacity="0"; },3200);
+}
+function installRefresh(pw){
+  const ind=document.createElement("div"); ind.id="pf-ptr";
+  ind.style.cssText="position:fixed;top:0;left:50%;transform:translate(-50%,-48px);width:34px;height:34px;border-radius:50%;background:var(--bg,#fff);box-shadow:0 2px 10px rgba(0,0,0,.18);display:flex;align-items:center;justify-content:center;z-index:98;transition:transform .15s";
+  ind.innerHTML='<div id="pf-spin" style="width:18px;height:18px;border:2.5px solid rgba(127,127,127,.35);border-top-color:#00C805;border-radius:50%"></div>';
+  document.body.appendChild(ind);
+  const spin=document.getElementById("pf-spin"); let startY=null, pull=0, busy=false;
+  const st=document.createElement("style"); st.textContent="@keyframes pfspin{to{transform:rotate(360deg)}}"; document.head.appendChild(st);
+  function setPull(px){ pull=px; ind.style.transform="translate(-50%,"+(Math.min(px,90)-48)+"px)"; spin.style.transform="rotate("+(px*3)+"deg)"; }
+  async function doRefresh(){
+    if(busy) return; busy=true; ind.style.transform="translate(-50%,14px)"; spin.style.animation="pfspin .8s linear infinite";
+    const before=asofText(); const t0=Date.now();
+    try{
+      const changed=await loadBlob();
+      if(changed){ const key=await keyFrom(pw); const pt=await crypto.subtle.decrypt({name:"AES-GCM",iv},key,ct); const html=new TextDecoder().decode(pt);
+        document.open(); document.write(html); document.close();
+        const lock=document.createElement("p"); lock.style.cssText="text-align:center;font-size:12px;margin:24px 0 0"; lock.innerHTML='<a href="#" id="lock" style="color:inherit;opacity:.6">Lock this device</a>'; document.body.appendChild(lock);
+        document.getElementById("lock").onclick=e=>{e.preventDefault();try{localStorage.removeItem("pfpw")}catch(_){}location.reload();};
+        installRefresh(pw); toast("Updated · stocks "+asofText());
+      } else { await new Promise(r=>setTimeout(r,Math.max(0,600-(Date.now()-t0)))); toast("Already up to date · stocks "+before); }
+    }catch(e){ toast("Couldn't refresh — check your connection"); }
+    finally{ busy=false; spin.style.animation=""; setPull(0); }
+  }
+  document.addEventListener("touchstart",e=>{ if(window.scrollY<=0&&!busy){ startY=e.touches[0].clientY; } else startY=null; },{passive:true});
+  document.addEventListener("touchmove",e=>{ if(startY===null||busy) return; const dy=e.touches[0].clientY-startY; if(dy>0&&window.scrollY<=0) setPull(dy*0.5); },{passive:true});
+  document.addEventListener("touchend",()=>{ if(startY===null) return; const p=pull; startY=null; if(p>=60) doRefresh(); else setPull(0); },{passive:true});
+  document.addEventListener("keydown",e=>{ if((e.metaKey||e.ctrlKey)&&e.key==="r"){ e.preventDefault(); doRefresh(); } });
+  window.pfRefresh=doRefresh;
+}
 async function tryPw(pw){
-  try{ await show(await keyFrom(pw)); try{localStorage.setItem("pfpw",pw)}catch(_){} return true; }catch(e){ return false; }
+  try{ await show(await keyFrom(pw), pw); try{localStorage.setItem("pfpw",pw)}catch(_){} return true; }catch(e){ return false; }
 }
 (async()=>{
   try{ await loadBlob(); }catch(e){ document.getElementById("err").textContent="Couldn't load the latest page — check your connection and pull to refresh."; return; }
