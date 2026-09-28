@@ -16,7 +16,10 @@ button{font:600 16px -apple-system,sans-serif;padding:12px;border:0;border-radiu
 <input id="pw" type="password" autocomplete="current-password" placeholder="Passphrase" autofocus>
 <button type="submit">Unlock</button><div class="err" id="err"></div></form>
 <script>
-const ITER=600000; let salt, iv, ct, blobB64="";
+const ITER=600000, SHELL="20ae935067"; let salt, iv, ct, blobB64="";
+// self-update: if the server has a newer shell than this one, reload with a cache-busting query
+(async()=>{ try{ const r=await fetch("version.json?t="+Date.now(),{cache:"no-store"}); const v=(await r.json()).shell;
+  if(v && v!==SHELL && !location.search.includes("v="+v)) location.replace(location.pathname+"?v="+v); }catch(e){} })();
 async function loadBlob(){
   const r=await fetch("blob.json?t="+Date.now(),{cache:"no-store"});
   if(!r.ok) throw new Error("blob "+r.status);
